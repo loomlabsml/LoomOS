@@ -1,6 +1,6 @@
 # 🚀 LoomOS - The Iron Suit for AI Models
 
-[![Build Status](https://github.com/loomos/loomos/workflows/CI/badge.svg)](https://github.com/loomos/loomos/actions)
+[![Build Status](https://github.com/loomos/loomos/workflows/CI/badge.svg)](https://github.com/loomlabsml/LoomOS/actions)
 [![Coverage](https://codecov.io/gh/loomos/loomos/branch/main/graph/badge.svg)](https://codecov.io/gh/loomos/loomos)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
