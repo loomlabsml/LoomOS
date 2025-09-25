@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loomctl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loomctl
+  template:
+    metadata:
+      labels:
+        app: loomctl
+    spec:
+      containers:
+      - name: loomctl
+        image: loomos/loomctl:latest
+        ports:
+        - containerPort: 8000

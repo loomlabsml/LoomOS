@@ -1,0 +1,22 @@
+# Job Manifest Schema
+
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "job_id": {"type": "string"},
+    "name": {"type": "string"},
+    "owner": {"type": "string"},
+    "description": {"type": "string"},
+    "resources": {"type": "object"},
+    "artifacts": {"type": "array"},
+    "command": {"type": "object"},
+    "constraints": {"type": "object"},
+    "policy": {"type": "object"},
+    "checkpointing": {"type": "object"},
+    "outputs": {"type": "array"},
+    "notifications": {"type": "array"},
+    "monitoring": {"type": "object"}
+  },
+  "required": ["job_id", "name", "command"]
+}

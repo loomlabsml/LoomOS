@@ -1,0 +1,975 @@
+openapi: 3.0.3
+info:
+  title: LoomCtl API
+  description: |
+    **LoomOS Control Plane API**
+    
+    Advanced enterprise-grade control plane for LoomOS providing:
+    - Distributed AI training orchestration
+    - Real-time job management and monitoring
+    - Multi-tenant resource allocation
+    - WebSocket streaming for live updates
+    - Marketplace integration for AI services
+    - TEE attestation and security
+    
+    ## Authentication
+    All endpoints require Bearer token authentication.
+    
+    ## Rate Limiting
+    - 1000 requests per minute for standard endpoints
+    - 100 requests per minute for compute-intensive operations
+    
+    ## WebSocket Connections
+    Real-time updates available via WebSocket at `/ws/{client_id}`
+    
+  version: 1.0.0
+  contact:
+    name: LoomOS Support
+    email: support@loomos.ai
+    url: https://loomos.ai/docs
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://api.loomos.ai/v1
+    description: Production server
+  - url: https://staging-api.loomos.ai/v1
+    description: Staging server
+  - url: http://localhost:8000
+    description: Local development server
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for API authentication
+  
+  schemas:
+    JobSpec:
+      type: object
+      required:
+        - job_type
+        - name
+        - image
+      properties:
+        job_id:
+          type: string
+          description: Unique job identifier (auto-generated if not provided)
+          example: "job_abc12345"
+        job_type:
+          type: string
+          enum: [training, inference, evaluation, data_processing, model_adaptation, verification]
+          description: Type of job to execute
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Human-readable job name
+          example: "BERT Fine-tuning on Custom Dataset"
+        description:
+          type: string
+          description: Optional job description
+          example: "Fine-tune BERT model on customer support tickets"
+        image:
+          type: string
+          description: Container image to run
+          example: "loomos/pytorch:latest"
+        command:
+          type: array
+          items:
+            type: string
+          description: Command to execute in container
+          example: ["python", "train.py", "--epochs", "10"]
+        environment:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables
+          example:
+            CUDA_VISIBLE_DEVICES: "0,1"
+            LEARNING_RATE: "0.001"
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobResource'
+          description: Resource requirements
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+          description: Job priority (1=lowest, 10=highest)
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Maximum job execution time
+          example: 3600
+        retry_limit:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 3
+          description: Maximum retry attempts
+        world_size:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Number of workers for distributed training
+        compression_ratio:
+          type: number
+          minimum: 0.001
+          maximum: 1.0
+          default: 0.01
+          description: Gradient compression ratio for distributed training
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: User-defined tags
+          example:
+            project: "nlp_research"
+            team: "ai_platform"
+    
+    JobResource:
+      type: object
+      required:
+        - resource_type
+        - amount
+      properties:
+        resource_type:
+          type: string
+          enum: [cpu, gpu, memory, storage, network]
+          description: Type of resource
+        amount:
+          type: number
+          minimum: 0
+          description: Amount of resource required
+          example: 4.0
+        unit:
+          type: string
+          default: "cores"
+          description: Unit of measurement
+          example: "cores"
+    
+    JobStatus:
+      type: object
+      properties:
+        job_id:
+          type: string
+          description: Unique job identifier
+          example: "job_abc12345"
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled, paused]
+          description: Current job status
+        progress:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Job completion progress (0.0-1.0)
+          example: 0.75
+        message:
+          type: string
+          description: Status message or latest update
+          example: "Training epoch 8/10 completed"
+        created_at:
+          type: string
+          format: date-time
+          description: Job creation timestamp
+        started_at:
+          type: string
+          format: date-time
+          description: Job start timestamp
+        completed_at:
+          type: string
+          format: date-time
+          description: Job completion timestamp
+        result:
+          type: object
+          description: Job execution results
+          example:
+            model_accuracy: 0.95
+            training_loss: 0.12
+            model_path: "/models/bert_finetuned.pth"
+        error:
+          type: string
+          description: Error message if job failed
+          example: "CUDA out of memory"
+        resources_used:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobResource'
+          description: Actual resources consumed
+        assigned_workers:
+          type: array
+          items:
+            type: string
+          description: Workers assigned to this job
+          example: ["worker_001", "worker_002"]
+    
+    WorkerInfo:
+      type: object
+      properties:
+        worker_id:
+          type: string
+          description: Unique worker identifier
+          example: "worker_gpu_001"
+        status:
+          type: string
+          enum: [idle, busy, offline, maintenance]
+          description: Current worker status
+        capabilities:
+          type: object
+          description: Worker capabilities and resources
+          example:
+            gpu_count: 2
+            gpu_memory_gb: 32
+            cpu_cores: 16
+            memory_gb: 64
+        current_load:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Current resource utilization (0.0-1.0)
+          example: 0.3
+        last_heartbeat:
+          type: string
+          format: date-time
+          description: Last heartbeat timestamp
+    
+    ClusterStats:
+      type: object
+      properties:
+        total_workers:
+          type: integer
+          description: Total number of workers in cluster
+          example: 10
+        active_workers:
+          type: integer
+          description: Number of active workers
+          example: 8
+        total_jobs:
+          type: integer
+          description: Total number of jobs (all time)
+          example: 1500
+        active_jobs:
+          type: integer
+          description: Currently running jobs
+          example: 12
+        completed_jobs:
+          type: integer
+          description: Successfully completed jobs
+          example: 1200
+        failed_jobs:
+          type: integer
+          description: Failed jobs
+          example: 45
+        cpu_utilization:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Overall CPU utilization
+          example: 0.65
+        gpu_utilization:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Overall GPU utilization
+          example: 0.82
+        memory_utilization:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: Overall memory utilization
+          example: 0.45
+        avg_job_duration_seconds:
+          type: number
+          description: Average job duration
+          example: 1800.5
+        jobs_per_hour:
+          type: number
+          description: Job throughput rate
+          example: 25.3
+    
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: Error message
+          example: "Job not found"
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+        trace_id:
+          type: string
+          description: Request trace ID for debugging
+          example: "trace_xyz789"
+
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Comprehensive health check of all system components
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: System health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  timestamp:
+                    type: string
+                    format: date-time
+                  components:
+                    type: object
+                    properties:
+                      database:
+                        type: object
+                      memory_system:
+                        type: object
+                      marketplace:
+                        type: object
+                      cluster:
+                        $ref: '#/components/schemas/ClusterStats'
+                  version:
+                    type: string
+                    example: "1.0.0"
+        '500':
+          description: Health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /metrics:
+    get:
+      summary: Prometheus Metrics
+      description: Prometheus-formatted metrics for monitoring
+      tags: [Monitoring]
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP loomctl_api_requests_total Total API requests
+                  # TYPE loomctl_api_requests_total counter
+                  loomctl_api_requests_total{method="GET",endpoint="/jobs",status="200"} 1500
+  
+  /jobs:
+    post:
+      summary: Submit Job
+      description: Submit a new job for execution
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobSpec'
+            examples:
+              training_job:
+                summary: ML Training Job
+                value:
+                  job_type: "training"
+                  name: "BERT Fine-tuning"
+                  description: "Fine-tune BERT on custom dataset"
+                  image: "loomos/pytorch:latest"
+                  command: ["python", "train.py"]
+                  resources:
+                    - resource_type: "gpu"
+                      amount: 2
+                      unit: "cards"
+                    - resource_type: "memory"
+                      amount: 32
+                      unit: "GB"
+                  world_size: 4
+                  compression_ratio: 0.01
+              inference_job:
+                summary: Inference Job
+                value:
+                  job_type: "inference"
+                  name: "Batch Inference"
+                  image: "loomos/inference:latest"
+                  command: ["python", "infer.py", "--batch-size", "64"]
+                  resources:
+                    - resource_type: "gpu"
+                      amount: 1
+                      unit: "cards"
+      responses:
+        '200':
+          description: Job submitted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                    example: "job_abc12345"
+                  status:
+                    type: string
+                    example: "submitted"
+        '400':
+          description: Invalid job specification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+    
+    get:
+      summary: List Jobs
+      description: List jobs for the authenticated user
+      tags: [Jobs]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, completed, failed, cancelled, paused]
+          description: Filter by job status
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Maximum number of jobs to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of jobs to skip
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/JobStatus'
+        '401':
+          description: Unauthorized
+  
+  /jobs/{job_id}:
+    get:
+      summary: Get Job Status
+      description: Get detailed status of a specific job
+      tags: [Jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique job identifier
+          example: "job_abc12345"
+      responses:
+        '200':
+          description: Job status details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Access denied
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    
+    delete:
+      summary: Cancel Job
+      description: Cancel a running or pending job
+      tags: [Jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique job identifier
+      responses:
+        '200':
+          description: Job cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Job cancelled successfully"
+        '400':
+          description: Job cannot be cancelled
+        '401':
+          description: Unauthorized
+        '403':
+          description: Access denied
+        '404':
+          description: Job not found
+  
+  /jobs/{job_id}/logs:
+    get:
+      summary: Stream Job Logs
+      description: Stream real-time logs from a running job
+      tags: [Jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique job identifier
+      responses:
+        '200':
+          description: Server-sent events stream of log entries
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  data: {"timestamp": "2025-09-23T10:30:00Z", "level": "INFO", "message": "Training started"}
+                  
+                  data: {"timestamp": "2025-09-23T10:30:30Z", "level": "INFO", "message": "Epoch 1/10 completed"}
+        '401':
+          description: Unauthorized
+        '403':
+          description: Access denied
+        '404':
+          description: Job not found
+  
+  /workers:
+    get:
+      summary: List Workers
+      description: List all active workers in the cluster
+      tags: [Workers]
+      responses:
+        '200':
+          description: List of workers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkerInfo'
+        '401':
+          description: Unauthorized
+  
+  /workers/{worker_id}/heartbeat:
+    post:
+      summary: Worker Heartbeat
+      description: Receive heartbeat from a worker (internal use)
+      tags: [Workers]
+      parameters:
+        - name: worker_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique worker identifier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: "idle"
+                capabilities:
+                  type: object
+                  example:
+                    gpu_count: 2
+                    memory_gb: 64
+                current_load:
+                  type: number
+                  example: 0.3
+      responses:
+        '200':
+          description: Heartbeat received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Heartbeat received"
+                  timestamp:
+                    type: string
+                    format: date-time
+        '401':
+          description: Unauthorized
+  
+  /cluster/stats:
+    get:
+      summary: Cluster Statistics
+      description: Get comprehensive cluster statistics
+      tags: [Cluster]
+      responses:
+        '200':
+          description: Cluster statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterStats'
+        '401':
+          description: Unauthorized
+  
+  /cluster/nodes:
+    get:
+      summary: Cluster Nodes
+      description: Get information about cluster nodes
+      tags: [Cluster]
+      responses:
+        '200':
+          description: Cluster node information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_nodes:
+                    type: integer
+                    example: 10
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        worker_id:
+                          type: string
+                          example: "worker_gpu_001"
+                        status:
+                          type: string
+                          example: "idle"
+                        load:
+                          type: number
+                          example: 0.3
+                        last_seen:
+                          type: string
+                          format: date-time
+        '401':
+          description: Unauthorized
+  
+  /ai/agents/execute:
+    post:
+      summary: Execute AI Agent Task
+      description: Execute a task using the AI agent system
+      tags: [AI/ML]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+                  description: Task prompt for the agent
+                  example: "Analyze this dataset and provide insights"
+                tools:
+                  type: array
+                  items:
+                    type: string
+                  description: Available tools for the agent
+                  example: ["data_analyzer", "visualization"]
+                context:
+                  type: object
+                  description: Additional context for the task
+      responses:
+        '200':
+          description: Agent task completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "completed"
+                  result:
+                    type: object
+                    description: Agent execution result
+                  timestamp:
+                    type: string
+                    format: date-time
+        '500':
+          description: Agent execution failed
+  
+  /ai/models/adapt:
+    post:
+      summary: Adapt Model
+      description: Adapt a model using the Forge system
+      tags: [AI/ML]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_id:
+                  type: string
+                  description: Base model identifier
+                  example: "bert-base-uncased"
+                adaptation_type:
+                  type: string
+                  enum: [lora, qlora, full_finetune]
+                  description: Type of model adaptation
+                  example: "lora"
+                training_data:
+                  type: object
+                  description: Training data specification
+                config:
+                  type: object
+                  description: Adaptation configuration
+                  example:
+                    learning_rate: 0.0001
+                    epochs: 5
+                    rank: 16
+      responses:
+        '200':
+          description: Model adaptation completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "completed"
+                  adapted_model_id:
+                    type: string
+                    example: "bert_custom_v1"
+                  metrics:
+                    type: object
+                    description: Training metrics
+                  timestamp:
+                    type: string
+                    format: date-time
+        '500':
+          description: Model adaptation failed
+  
+  /ai/verify:
+    post:
+      summary: Verify Content
+      description: Verify content using the Prism verification system
+      tags: [AI/ML]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  description: Content to verify
+                  example: "The capital of France is Paris."
+                type:
+                  type: string
+                  enum: [factual, safety, quality, bias]
+                  description: Type of verification
+                  example: "factual"
+                context:
+                  type: object
+                  description: Additional context for verification
+      responses:
+        '200':
+          description: Content verification completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verification_result:
+                    type: object
+                    description: Verification results
+                    properties:
+                      verified:
+                        type: boolean
+                        example: true
+                      confidence:
+                        type: number
+                        example: 0.95
+                      details:
+                        type: object
+                  timestamp:
+                    type: string
+                    format: date-time
+        '500':
+          description: Verification failed
+  
+  /marketplace/listings:
+    get:
+      summary: Get Marketplace Listings
+      description: Get available marketplace listings
+      tags: [Marketplace]
+      parameters:
+        - name: listing_type
+          in: query
+          schema:
+            type: string
+            enum: [model, compute, storage, dataset, service, api_access]
+          description: Filter by listing type
+      responses:
+        '200':
+          description: Marketplace listings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  listings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        listing_id:
+                          type: string
+                          example: "model_bert_v1"
+                        title:
+                          type: string
+                          example: "Fine-tuned BERT Model"
+                        description:
+                          type: string
+                          example: "BERT model fine-tuned on domain-specific data"
+                        price:
+                          type: string
+                          example: "10.00 USD"
+                        quality_score:
+                          type: number
+                          example: 4.5
+                        provider_id:
+                          type: string
+                          example: "provider_ai_corp"
+        '500':
+          description: Failed to retrieve listings
+  
+  /marketplace/purchase:
+    post:
+      summary: Purchase Listing
+      description: Purchase a marketplace listing
+      tags: [Marketplace]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                listing_id:
+                  type: string
+                  description: Listing to purchase
+                  example: "model_bert_v1"
+                quantity:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                  description: Quantity to purchase
+      responses:
+        '200':
+          description: Purchase initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction_id:
+                    type: string
+                    example: "txn_abc12345"
+                  status:
+                    type: string
+                    example: "processing"
+                  timestamp:
+                    type: string
+                    format: date-time
+        '500':
+          description: Purchase failed
+  
+  /metrics/stream:
+    get:
+      summary: Stream Real-time Metrics
+      description: Stream real-time system metrics
+      tags: [Monitoring]
+      responses:
+        '200':
+          description: Server-sent events stream of metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  data: {"timestamp": "2025-09-23T10:30:00Z", "cluster_stats": {...}, "active_jobs": 5}
+                  
+                  data: {"timestamp": "2025-09-23T10:30:05Z", "cluster_stats": {...}, "active_jobs": 6}
+        '401':
+          description: Unauthorized
+  
+  /ws/{client_id}:
+    get:
+      summary: WebSocket Connection
+      description: WebSocket endpoint for real-time updates
+      tags: [WebSocket]
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique client identifier
+      responses:
+        '101':
+          description: WebSocket connection established
+        '400':
+          description: Invalid WebSocket request
+
+tags:
+  - name: Health
+    description: System health and status
+  - name: Jobs
+    description: Job management and execution
+  - name: Workers
+    description: Worker node management
+  - name: Cluster
+    description: Cluster statistics and information
+  - name: AI/ML
+    description: AI and machine learning operations
+  - name: Marketplace
+    description: AI service marketplace
+  - name: Monitoring
+    description: Metrics and monitoring
+  - name: WebSocket
+    description: Real-time WebSocket connections

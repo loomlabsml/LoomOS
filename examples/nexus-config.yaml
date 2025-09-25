@@ -1,0 +1,152 @@
+# Example configurations for Nexus Master-Worker deployment
+
+# Master node configuration
+master:
+  master_id: "nexus-master-prod"
+  bind_address: "0.0.0.0"
+  bind_port: 29500
+  max_workers: 1000
+  enable_tls: true
+  enable_worker_attestation: true
+  metrics_port: 8090
+  
+  # Worker management
+  worker_timeout_seconds: 30.0
+  heartbeat_interval_seconds: 10.0
+  
+  # Job scheduling
+  max_concurrent_jobs: 50
+  task_allocation_strategy: "load_balanced"  # round_robin, load_balanced, locality_aware
+  
+  # Performance optimization
+  enable_adaptive_scaling: true
+  enable_load_balancing: true
+  enable_fault_tolerance: true
+
+# Worker node configuration template
+worker:
+  worker_id: null  # Auto-generated if not specified
+  master_addr: "master.nexus.internal"
+  master_port: 29500
+  
+  # Distributed training settings
+  compression_method: "top_k"
+  compression_ratio: 0.01
+  backend: "nccl"
+  
+  # Resource limits
+  max_memory_gb: 32.0
+  max_cpu_cores: 16
+  gpu_memory_fraction: 0.9
+  
+  # Performance settings
+  batch_size: 32
+  max_concurrent_tasks: 4
+  
+  # Security
+  enable_tee: true
+  
+# Example job configurations
+
+# Small development job
+development_job:
+  name: "dev-transformer-training"
+  model_config:
+    architecture: "transformer"
+    layers: 6
+    hidden_size: 512
+    attention_heads: 8
+    vocabulary_size: 32000
+  dataset_config:
+    path: "/data/dev_dataset"
+    format: "jsonl"
+    preprocessing:
+      tokenization: "gpt2"
+      max_length: 512
+  training_config:
+    learning_rate: 0.001
+    batch_size: 8
+    max_epochs: 1
+    optimizer: "adam"
+  distributed_config:
+    compression:
+      method: "top_k"
+      ratio: 0.1
+  required_workers: 2
+
+# Production large model job  
+production_job:
+  name: "llm-7b-production"
+  model_config:
+    architecture: "transformer"
+    layers: 32
+    hidden_size: 4096
+    attention_heads: 32
+    vocabulary_size: 50000
+    parameters: "7B"
+  dataset_config:
+    path: "/shared/datasets/the-pile"
+    format: "jsonl"
+    preprocessing:
+      tokenization: "gpt2"
+      max_length: 2048
+      shuffle: true
+    validation_split: 0.05
+  training_config:
+    learning_rate: 0.0001
+    batch_size: 4
+    gradient_accumulation_steps: 16
+    max_epochs: 3
+    optimizer: "adamw"
+    scheduler: "cosine"
+    warmup_steps: 2000
+    max_grad_norm: 1.0
+  distributed_config:
+    compression:
+      method: "top_k"
+      ratio: 0.001
+    synchronization_mode: "async"
+    fault_tolerance: true
+    checkpoint_interval: 500
+  required_workers: 32
+  estimated_duration_hours: 72
+  priority: 1
+  max_retries: 3
+  security:
+    require_attestation: true
+    allow_public_workers: false
+    data_encryption: true
+
+# Multi-modal training job
+multimodal_job:
+  name: "vision-language-model"
+  model_config:
+    architecture: "clip"
+    vision_encoder:
+      type: "vision_transformer"
+      patch_size: 16
+      layers: 24
+      hidden_size: 1024
+    text_encoder:
+      type: "transformer"
+      layers: 12
+      hidden_size: 768
+    cross_attention_layers: 6
+  dataset_config:
+    path: "/shared/datasets/laion-5b"
+    format: "webdataset"
+    preprocessing:
+      image_size: 224
+      text_max_length: 256
+  training_config:
+    learning_rate: 0.0005
+    batch_size: 8
+    gradient_accumulation_steps: 8
+    max_epochs: 2
+    optimizer: "adamw"
+  distributed_config:
+    compression:
+      method: "quantization"
+      bits: 8
+    synchronization_mode: "sync"
+  required_workers: 16

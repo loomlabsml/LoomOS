@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+"""
+LoomOS Nexus Cluster Management CLI
+
+Command-line interface for managing Nexus distributed training clusters
+with the new Master-Worker architecture.
+
+Usage:
+    nexus-cluster start-master [options]
+    nexus-cluster start-worker [options]
+    nexus-cluster submit-job [options]
+    nexus-cluster status [options]
+    nexus-cluster scale [options]
+    nexus-cluster stop [options]
+"""
+
+import asyncio
+import click
+import json
+import time
+import aiohttp
+import yaml
+from pathlib import Path
+from typing import Dict, Any, Optional
+import logging
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class NexusClusterClient:
+    """Client for interacting with Nexus cluster"""
+    
+    def __init__(self, master_url: str):
+        self.master_url = master_url.rstrip('/')
+        self.session: Optional[aiohttp.ClientSession] = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    async def get_status(self) -> Dict[str, Any]:
+        """Get cluster status"""
+        async with self.session.get(f"{self.master_url}/api/v1/status") as resp:
+            return await resp.json()
+    
+    async def list_workers(self) -> Dict[str, Any]:
+        """List all workers"""
+        async with self.session.get(f"{self.master_url}/api/v1/workers") as resp:
+            return await resp.json()
+    
+    async def get_worker(self, worker_id: str) -> Dict[str, Any]:
+        """Get specific worker info"""
+        async with self.session.get(f"{self.master_url}/api/v1/workers/{worker_id}") as resp:
+            return await resp.json()
+    
+    async def list_jobs(self) -> Dict[str, Any]:
+        """List all jobs"""
+        async with self.session.get(f"{self.master_url}/api/v1/jobs") as resp:
+            return await resp.json()
+    
+    async def get_job(self, job_id: str) -> Dict[str, Any]:
+        """Get specific job info"""
+        async with self.session.get(f"{self.master_url}/api/v1/jobs/{job_id}") as resp:
+            return await resp.json()
+    
+    async def create_job(self, job_spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new job"""
+        async with self.session.post(f"{self.master_url}/api/v1/jobs", json=job_spec) as resp:
+            return await resp.json()
+    
+    async def start_job(self, job_id: str) -> Dict[str, Any]:
+        """Start a job"""
+        async with self.session.post(f"{self.master_url}/api/v1/jobs/{job_id}/start") as resp:
+            return await resp.json()
+    
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Cancel a job"""
+        async with self.session.post(f"{self.master_url}/api/v1/jobs/{job_id}/cancel") as resp:
+            return await resp.json()
+    
+    async def remove_worker(self, worker_id: str) -> Dict[str, Any]:
+        """Remove a worker"""
+        async with self.session.delete(f"{self.master_url}/api/v1/workers/{worker_id}") as resp:
+            return await resp.json()
+
+@click.group()
+@click.option('--master-url', default='http://localhost:29500', help='Master node URL')
+@click.pass_context
+def cli(ctx, master_url):
+    """Nexus Cluster Management CLI"""
+    ctx.ensure_object(dict)
+    ctx.obj['master_url'] = master_url
+
+@cli.command()
+@click.option('--master-id', help='Master node identifier')
+@click.option('--bind-address', default='0.0.0.0', help='Bind address')
+@click.option('--bind-port', default=29500, type=int, help='Bind port')
+@click.option('--max-workers', default=1000, type=int, help='Maximum workers')
+@click.option('--enable-tls', is_flag=True, help='Enable TLS')
+@click.option('--enable-attestation', is_flag=True, help='Enable worker attestation')
+@click.option('--metrics-port', default=8090, type=int, help='Metrics port')
+@click.option('--config-file', type=click.Path(exists=True), help='Configuration file')
+def start_master(master_id, bind_address, bind_port, max_workers, enable_tls, 
+                enable_attestation, metrics_port, config_file):
+    """Start the master node"""
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    
+    from nexus.master.coordinator import main, MasterConfig
+    
+    # Load config from file if provided
+    config_data = {}
+    if config_file:
+        with open(config_file, 'r') as f:
+            if config_file.endswith('.yaml') or config_file.endswith('.yml'):
+                config_data = yaml.safe_load(f)
+            else:
+                config_data = json.load(f)
+    
+    # Override with CLI arguments
+    config_data.update({
+        'master_id': master_id or config_data.get('master_id'),
+        'bind_address': bind_address,
+        'bind_port': bind_port,
+        'max_workers': max_workers,
+        'enable_tls': enable_tls,
+        'enable_worker_attestation': enable_attestation,
+        'metrics_port': metrics_port
+    })
+    
+    click.echo(f"Starting Nexus Master Node...")
+    click.echo(f"Bind Address: {bind_address}:{bind_port}")
+    click.echo(f"Max Workers: {max_workers}")
+    click.echo(f"TLS Enabled: {enable_tls}")
+    click.echo(f"Attestation Enabled: {enable_attestation}")
+    click.echo(f"Metrics Port: {metrics_port}")
+    
+    # Run master node
+    asyncio.run(main())
+
+@cli.command()
+@click.option('--worker-id', help='Worker identifier')
+@click.option('--master-addr', default='localhost', help='Master address')
+@click.option('--master-port', default=29500, type=int, help='Master port')
+@click.option('--rank', default=0, type=int, help='Worker rank')
+@click.option('--world-size', default=1, type=int, help='World size')
+@click.option('--max-memory', default=8.0, type=float, help='Max memory (GB)')
+@click.option('--max-cpus', default=4, type=int, help='Max CPU cores')
+@click.option('--compression-method', default='top_k', help='Compression method')
+@click.option('--compression-ratio', default=0.01, type=float, help='Compression ratio')
+@click.option('--enable-tee', is_flag=True, help='Enable TEE attestation')
+@click.option('--config-file', type=click.Path(exists=True), help='Configuration file')
+def start_worker(worker_id, master_addr, master_port, rank, world_size, max_memory,
+                max_cpus, compression_method, compression_ratio, enable_tee, config_file):
+    """Start a worker node"""
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    
+    from nexus.loomnode.main import run_worker
+    from nexus.loomnode.worker import WorkerConfig, CompressionMethod
+    
+    # Load config from file if provided
+    config_data = {}
+    if config_file:
+        with open(config_file, 'r') as f:
+            if config_file.endswith('.yaml') or config_file.endswith('.yml'):
+                config_data = yaml.safe_load(f)
+            else:
+                config_data = json.load(f)
+    
+    # Create args object (simulating command line args)
+    class Args:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+    
+    args = Args(
+        worker_id=worker_id or config_data.get('worker_id'),
+        rank=rank,
+        world_size=world_size,
+        master_addr=master_addr,
+        master_port=master_port,
+        backend='gloo',
+        compression_method=compression_method,
+        compression_ratio=compression_ratio,
+        batch_size=32,
+        max_tasks=4,
+        max_memory=max_memory,
+        max_cpus=max_cpus,
+        enable_tee=enable_tee
+    )
+    
+    click.echo(f"Starting Nexus Worker...")
+    click.echo(f"Worker ID: {args.worker_id}")
+    click.echo(f"Master: {master_addr}:{master_port}")
+    click.echo(f"Rank: {rank}/{world_size}")
+    click.echo(f"Resources: {max_memory}GB RAM, {max_cpus} CPUs")
+    click.echo(f"Compression: {compression_method} ({compression_ratio})")
+    
+    # Run worker
+    asyncio.run(run_worker(args))
+
+@cli.command()
+@click.option('--job-file', type=click.Path(exists=True), required=True, help='Job specification file')
+@click.option('--name', help='Job name override')
+@click.option('--workers', type=int, help='Required workers override')
+@click.pass_context
+def submit_job(ctx, job_file, name, workers):
+    """Submit a training job"""
+    
+    async def _submit_job():
+        # Load job specification
+        with open(job_file, 'r') as f:
+            if job_file.endswith('.yaml') or job_file.endswith('.yml'):
+                job_spec = yaml.safe_load(f)
+            else:
+                job_spec = json.load(f)
+        
+        # Override with CLI arguments
+        if name:
+            job_spec['name'] = name
+        if workers:
+            job_spec['required_workers'] = workers
+        
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                result = await client.create_job(job_spec)
+                click.echo(f"Job submitted successfully!")
+                click.echo(f"Job ID: {result['job_id']}")
+                click.echo(f"Status: {result['status']}")
+                click.echo(f"Created: {result['created_at']}")
+            except Exception as e:
+                click.echo(f"Failed to submit job: {e}", err=True)
+    
+    asyncio.run(_submit_job())
+
+@cli.command()
+@click.option('--verbose', '-v', is_flag=True, help='Verbose output')
+@click.option('--watch', '-w', is_flag=True, help='Watch mode (continuous updates)')
+@click.option('--interval', default=5, type=int, help='Watch interval (seconds)')
+@click.pass_context
+def status(ctx, verbose, watch, interval):
+    """Show cluster status"""
+    
+    async def _show_status():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                # Get master status
+                master_status = await client.get_status()
+                
+                # Get workers
+                workers_response = await client.list_workers()
+                workers = workers_response.get('workers', [])
+                
+                # Get jobs
+                jobs_response = await client.list_jobs()
+                jobs = jobs_response.get('jobs', [])
+                
+                # Display status
+                click.echo(f"\n🚀 Nexus Cluster Status")
+                click.echo(f"{'='*50}")
+                
+                # Master info
+                click.echo(f"\n📡 Master Node: {master_status['master_id']}")
+                click.echo(f"   Status: {master_status['status']}")
+                click.echo(f"   Uptime: {master_status['performance']['uptime_seconds']:.1f}s")
+                click.echo(f"   CPU: {master_status['performance']['cpu_percent']:.1f}%")
+                click.echo(f"   Memory: {master_status['performance']['memory_percent']:.1f}%")
+                
+                # Workers summary
+                worker_status_counts = master_status['workers']['by_status']
+                click.echo(f"\n👥 Workers ({master_status['workers']['total']} total):")
+                for status_type, count in worker_status_counts.items():
+                    click.echo(f"   {status_type}: {count}")
+                
+                # Jobs summary
+                job_status_counts = master_status['jobs']['by_status']
+                click.echo(f"\n📋 Jobs ({master_status['jobs']['total']} total):")
+                for status_type, count in job_status_counts.items():
+                    click.echo(f"   {status_type}: {count}")
+                
+                if verbose:
+                    # Detailed worker info
+                    click.echo(f"\n🔍 Detailed Worker Information:")
+                    for worker in workers:
+                        click.echo(f"   {worker['worker_id']} ({worker['status']})")
+                        click.echo(f"     Rank: {worker.get('rank', 'N/A')}")
+                        click.echo(f"     Active Tasks: {len(worker.get('active_tasks', []))}")
+                        click.echo(f"     Last Heartbeat: {worker.get('last_heartbeat', 'N/A')}")
+                    
+                    # Detailed job info
+                    click.echo(f"\n📊 Detailed Job Information:")
+                    for job in jobs:
+                        click.echo(f"   {job['name']} ({job['job_id']})")
+                        click.echo(f"     Status: {job['status']}")
+                        click.echo(f"     Workers: {len(job.get('assigned_workers', []))}/{job.get('required_workers', 0)}")
+                        click.echo(f"     Progress: {job.get('completed_tasks', 0)}/{job.get('total_tasks', 0)}")
+                
+            except Exception as e:
+                click.echo(f"Failed to get cluster status: {e}", err=True)
+    
+    async def _watch_status():
+        while True:
+            click.clear()
+            await _show_status()
+            if not watch:
+                break
+            await asyncio.sleep(interval)
+    
+    asyncio.run(_watch_status())
+
+@cli.command()
+@click.option('--workers', type=int, required=True, help='Target number of workers')
+@click.option('--strategy', default='gradual', help='Scaling strategy (gradual/immediate)')
+@click.pass_context
+def scale(ctx, workers, strategy):
+    """Scale the cluster"""
+    
+    async def _scale_cluster():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                # Get current status
+                master_status = await client.get_status()
+                current_workers = master_status['workers']['total']
+                
+                click.echo(f"Current workers: {current_workers}")
+                click.echo(f"Target workers: {workers}")
+                
+                if workers > current_workers:
+                    click.echo(f"Scaling UP by {workers - current_workers} workers")
+                    click.echo("Please start additional worker nodes manually with:")
+                    click.echo(f"  nexus-cluster start-worker --master-addr <master-addr>")
+                elif workers < current_workers:
+                    click.echo(f"Scaling DOWN by {current_workers - workers} workers")
+                    click.echo("Note: Manual worker removal required for safety")
+                    
+                    # List workers that could be removed
+                    workers_response = await client.list_workers()
+                    idle_workers = [
+                        w for w in workers_response.get('workers', [])
+                        if w['status'] == 'idle' and len(w.get('active_tasks', [])) == 0
+                    ]
+                    
+                    if idle_workers:
+                        click.echo("Idle workers that can be safely removed:")
+                        for worker in idle_workers[:current_workers - workers]:
+                            click.echo(f"  {worker['worker_id']}")
+                else:
+                    click.echo("Cluster is already at target size")
+                
+            except Exception as e:
+                click.echo(f"Failed to scale cluster: {e}", err=True)
+    
+    asyncio.run(_scale_cluster())
+
+@cli.command()
+@click.option('--component', type=click.Choice(['master', 'workers', 'all']), default='all', help='Component to stop')
+@click.option('--force', is_flag=True, help='Force stop without confirmation')
+@click.pass_context
+def stop(ctx, component, force):
+    """Stop cluster components"""
+    
+    if not force:
+        click.confirm(f"Are you sure you want to stop {component}?", abort=True)
+    
+    async def _stop_cluster():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                if component in ['workers', 'all']:
+                    # Get all workers
+                    workers_response = await client.list_workers()
+                    workers = workers_response.get('workers', [])
+                    
+                    # Stop workers
+                    for worker in workers:
+                        try:
+                            await client.remove_worker(worker['worker_id'])
+                            click.echo(f"Stopped worker: {worker['worker_id']}")
+                        except Exception as e:
+                            click.echo(f"Failed to stop worker {worker['worker_id']}: {e}")
+                
+                if component in ['master', 'all']:
+                    click.echo("Stopping master node...")
+                    click.echo("Note: Master node shutdown requires direct signal (Ctrl+C)")
+                
+            except Exception as e:
+                click.echo(f"Failed to stop cluster: {e}", err=True)
+    
+    asyncio.run(_stop_cluster())
+
+@cli.command()
+@click.option('--target-master', required=True, help='Target master node ID for failover')
+@click.option('--reason', default='planned maintenance', help='Reason for failover')
+@click.option('--timeout', default=60, type=int, help='Failover timeout (seconds)')
+@click.pass_context
+def failover(ctx, target_master, reason, timeout):
+    """Initiate master failover"""
+    
+    async def _initiate_failover():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                click.echo(f"🔄 Initiating failover to master: {target_master}")
+                click.echo(f"Reason: {reason}")
+                
+                failover_request = {
+                    'target_master_id': target_master,
+                    'reason': reason
+                }
+                
+                result = await client.session.post(
+                    f"{client.master_url}/api/v1/failover/initiate",
+                    json=failover_request
+                )
+                
+                if result.status == 200:
+                    response = await result.json()
+                    click.echo(f"✅ Failover initiated successfully!")
+                    click.echo(f"Status: {response['status']}")
+                    click.echo(f"Target: {response['target_master']}")
+                    click.echo(f"Timestamp: {response['timestamp']}")
+                    
+                    # Monitor failover progress
+                    click.echo(f"\n⏳ Monitoring failover progress...")
+                    await _monitor_failover_progress(client, timeout)
+                    
+                else:
+                    error_text = await result.text()
+                    click.echo(f"❌ Failover failed: {error_text}", err=True)
+                    
+            except Exception as e:
+                click.echo(f"❌ Failover error: {e}", err=True)
+    
+    async def _monitor_failover_progress(client, timeout_seconds):
+        """Monitor failover progress"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout_seconds:
+            try:
+                # Check failover status
+                async with client.session.get(f"{client.master_url}/api/v1/failover/status") as resp:
+                    if resp.status == 200:
+                        status = await resp.json()
+                        
+                        click.echo(f"Current master: {status.get('current_master', 'unknown')}")
+                        click.echo(f"Election state: {status.get('election_state', 'unknown')}")
+                        
+                        if not status.get('is_coordinating_failover', False):
+                            click.echo("✅ Failover completed!")
+                            return
+                    else:
+                        click.echo("⚠️  Unable to check failover status")
+                
+                await asyncio.sleep(2.0)
+                
+            except Exception as e:
+                click.echo(f"⚠️  Status check error: {e}")
+                await asyncio.sleep(2.0)
+        
+        click.echo("⏰ Failover monitoring timeout")
+    
+    asyncio.run(_initiate_failover())
+
+@cli.command()
+@click.option('--force', is_flag=True, help='Force promotion without election')
+@click.pass_context
+def promote(ctx, force):
+    """Promote this node to master (emergency failover)"""
+    
+    async def _promote_to_master():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                click.echo(f"🚀 Promoting node to master...")
+                
+                result = await client.session.post(f"{client.master_url}/api/v1/failover/promote")
+                
+                if result.status == 200:
+                    response = await result.json()
+                    click.echo(f"✅ Promotion successful!")
+                    click.echo(f"Status: {response['status']}")
+                    click.echo(f"Master ID: {response['master_id']}")
+                    click.echo(f"Timestamp: {response['timestamp']}")
+                else:
+                    error_text = await result.text()
+                    click.echo(f"❌ Promotion failed: {error_text}", err=True)
+                    
+            except Exception as e:
+                click.echo(f"❌ Promotion error: {e}", err=True)
+    
+    if not force:
+        click.confirm("⚠️  This will force promotion to master. Continue?", abort=True)
+    
+    asyncio.run(_promote_to_master())
+
+@cli.command()
+@click.option('--reason', default='manual demotion', help='Reason for demotion')
+@click.pass_context
+def demote(ctx, reason):
+    """Demote current master (graceful step-down)"""
+    
+    async def _demote_from_master():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                click.echo(f"⬇️  Demoting from master role...")
+                click.echo(f"Reason: {reason}")
+                
+                demotion_request = {'reason': reason}
+                
+                result = await client.session.post(
+                    f"{client.master_url}/api/v1/failover/demote",
+                    json=demotion_request
+                )
+                
+                if result.status == 200:
+                    response = await result.json()
+                    click.echo(f"✅ Demotion successful!")
+                    click.echo(f"Status: {response['status']}")
+                    click.echo(f"Reason: {response['reason']}")
+                    click.echo(f"Timestamp: {response['timestamp']}")
+                else:
+                    error_text = await result.text()
+                    click.echo(f"❌ Demotion failed: {error_text}", err=True)
+                    
+            except Exception as e:
+                click.echo(f"❌ Demotion error: {e}", err=True)
+    
+    click.confirm("⚠️  This will demote the current master. Continue?", abort=True)
+    asyncio.run(_demote_from_master())
+
+@cli.command()
+@click.option('--detailed', is_flag=True, help='Show detailed failover information')
+@click.pass_context
+def failover_status(ctx, detailed):
+    """Show failover system status"""
+    
+    async def _show_failover_status():
+        async with NexusClusterClient(ctx.obj['master_url']) as client:
+            try:
+                async with client.session.get(f"{client.master_url}/api/v1/failover/status") as resp:
+                    if resp.status == 200:
+                        status = await resp.json()
+                        
+                        click.echo(f"\n🔧 Nexus Cluster Failover Status")
+                        click.echo(f"{'='*50}")
+                        
+                        if status.get('failover_enabled'):
+                            click.echo(f"\n📊 Master Election Status:")
+                            click.echo(f"   Current Master: {status.get('current_master', 'unknown')}")
+                            click.echo(f"   Is Primary: {status.get('is_primary_master', False)}")
+                            click.echo(f"   Election State: {status.get('election_state', 'unknown')}")
+                            click.echo(f"   Current Term: {status.get('current_term', 0)}")
+                            
+                            click.echo(f"\n🏗️  Cluster Configuration:")
+                            click.echo(f"   Cluster Nodes: {status.get('cluster_nodes', 0)}")
+                            click.echo(f"   Backup Masters: {len(status.get('backup_masters', []))}")
+                            
+                            click.echo(f"\n⚡ Failover Status:")
+                            is_coordinating = status.get('is_coordinating_failover', False)
+                            click.echo(f"   Coordinating Failover: {'Yes' if is_coordinating else 'No'}")
+                            
+                            if detailed:
+                                click.echo(f"\n🔍 Detailed Information:")
+                                click.echo(f"   Master ID: {status.get('master_id', 'unknown')}")
+                                click.echo(f"   Backup Masters: {', '.join(status.get('backup_masters', []))}")
+                                
+                                last_election = status.get('last_election')
+                                if last_election:
+                                    click.echo(f"   Last Election: {last_election}")
+                        
+                        else:
+                            click.echo(f"\n❌ Failover System: DISABLED")
+                            click.echo(f"   Reason: {status.get('reason', 'unknown')}")
+                            click.echo(f"   Running in standalone mode")
+                    
+                    else:
+                        click.echo(f"❌ Failed to get failover status: HTTP {resp.status}")
+                        
+            except Exception as e:
+                click.echo(f"❌ Failover status error: {e}", err=True)
+    
+    asyncio.run(_show_failover_status())
+
+@cli.command()
+@click.option('--output', type=click.Path(), help='Output file for job template')
+def init_job(output):
+    """Initialize a job specification template"""
+    
+    job_template = {
+        "name": "example-training-job",
+        "model_config": {
+            "architecture": "transformer",
+            "layers": 12,
+            "hidden_size": 768,
+            "attention_heads": 12,
+            "vocabulary_size": 50000
+        },
+        "dataset_config": {
+            "path": "/data/training_dataset",
+            "format": "jsonl",
+            "preprocessing": {
+                "tokenization": "gpt2",
+                "max_length": 512
+            }
+        },
+        "training_config": {
+            "learning_rate": 0.0001,
+            "batch_size": 32,
+            "max_epochs": 10,
+            "optimizer": "adamw",
+            "scheduler": "cosine"
+        },
+        "distributed_config": {
+            "compression": {
+                "method": "top_k",
+                "ratio": 0.01
+            },
+            "synchronization_mode": "async",
+            "gradient_accumulation_steps": 4
+        },
+        "required_workers": 4,
+        "max_retries": 3
+    }
+    
+    output_file = output or "job_template.yaml"
+    
+    with open(output_file, 'w') as f:
+        yaml.dump(job_template, f, default_flow_style=False, indent=2)
+    
+    click.echo(f"Job template created: {output_file}")
+    click.echo("Edit the template and submit with: nexus-cluster submit-job --job-file <file>")
+    """Initialize a job specification template"""
+    
+    job_template = {
+        "name": "example-training-job",
+        "model_config": {
+            "architecture": "transformer",
+            "layers": 12,
+            "hidden_size": 768,
+            "attention_heads": 12,
+            "vocabulary_size": 50000
+        },
+        "dataset_config": {
+            "path": "/data/training_dataset",
+            "format": "jsonl",
+            "preprocessing": {
+                "tokenization": "gpt2",
+                "max_length": 512
+            }
+        },
+        "training_config": {
+            "learning_rate": 0.0001,
+            "batch_size": 32,
+            "max_epochs": 10,
+            "optimizer": "adamw",
+            "scheduler": "cosine"
+        },
+        "distributed_config": {
+            "compression": {
+                "method": "top_k",
+                "ratio": 0.01
+            },
+            "synchronization_mode": "async",
+            "gradient_accumulation_steps": 4
+        },
+        "required_workers": 4,
+        "max_retries": 3
+    }
+    
+    output_file = output or "job_template.yaml"
+    
+    with open(output_file, 'w') as f:
+        yaml.dump(job_template, f, default_flow_style=False, indent=2)
+    
+    click.echo(f"Job template created: {output_file}")
+    click.echo("Edit the template and submit with: nexus-cluster submit-job --job-file <file>")
+
+if __name__ == '__main__':
+    cli()

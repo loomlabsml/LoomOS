@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: loomnode
+spec:
+  selector:
+    matchLabels:
+      app: loomnode
+  template:
+    metadata:
+      labels:
+        app: loomnode
+    spec:
+      containers:
+      - name: loomnode
+        image: loomos/loomnode:latest
